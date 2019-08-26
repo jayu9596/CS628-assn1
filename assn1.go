@@ -9,7 +9,7 @@ import (
 	// go get github.com/sarkarbidya/CS628-assn1/userlib
 
 	"crypto/rsa"
-	"fmt"
+	"strconv"
 
 	"github.com/sarkarbidya/CS628-assn1/userlib"
 
@@ -95,11 +95,181 @@ type User struct {
 	// be public (start with a capital letter)
 }
 
+//FileRecord : File Record structure used to store the file information
+type FileRecord struct {
+	Name  string
+	Size  int
+	Owner string
+}
+
+//ReverseBytes : Reverse a byte array
+func ReverseBytes(key []byte) []byte {
+	arr := make([]byte, len(key))
+	copy(arr, key)
+	for i := len(arr)/2 - 1; i >= 0; i-- {
+		opp := len(arr) - 1 - i
+		arr[i], arr[opp] = arr[opp], arr[i]
+	}
+	return arr
+}
+
+//GenerateUserKey : Returns a Unique Key based on username and password
+func (userdata *User) GenerateUserKey() []byte {
+	userKey := userlib.Argon2Key([]byte(userdata.Password), []byte(userdata.Username), uint32(userlib.BlockSize))
+	return userKey
+}
+
+//GenerateFileKey : Returns a Unique Key based on username and password
+func (userdata *User) GenerateFileKey(filename string) []byte {
+	userKey := userdata.GenerateUserKey()
+	salt := userlib.RandomBytes(userlib.BlockSize)
+	fileKey := userlib.Argon2Key(userKey, salt, uint32(userlib.BlockSize))
+	return fileKey
+}
+
+//GetFileKey : Retrieve File key after checking Integrity
+func (userdata *User) GetFileKey(filename string) ([]byte, error) {
+	userKey := userdata.GenerateUserKey()
+	fileNameKey := filename + "key"
+	fileNameMac := filename + "mac"
+	pubKey, ret := userlib.KeystoreGet(userdata.Username)
+	if !ret {
+		return nil, errors.New("Error while retriving key")
+	}
+	IV, err := json.Marshal(pubKey)
+	if err != nil {
+		return nil, errors.New("Error while marshaling")
+	}
+	IV = IV[:userlib.BlockSize]
+
+	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
+	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
+	macRetValue, ret := userlib.DatastoreGet(string(macKey))
+	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
+
+	macValue := GenerateHMAC(userKey, cipherRetValue)
+	if !userlib.Equal(macValue, macRetValue) {
+		return nil, errors.New("Data Corrupt")
+	}
+
+	cipherRetValue = GetDecryptedData(userKey, IV, cipherRetValue)
+	return cipherRetValue, nil
+}
+
+//GetFile : Retrieve File DataStructure after checking Integrity
+func (userdata *User) GetFile(filename string, fileKey []byte) (*FileRecord, error) {
+	IV := ReverseBytes(fileKey)
+	fileRecord := filename + "Record"
+	fileRecordMac := filename + "RecordMac"
+	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
+	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
+
+	macRetValue, ret := userlib.DatastoreGet(string(macKey))
+	if !ret {
+		return nil, errors.New("Data Corrupt")
+	}
+
+	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret {
+		return nil, errors.New("Data Corrupt")
+	}
+
+	macValue := GenerateHMAC(fileKey, cipherRetValue)
+	if !userlib.Equal(macValue, macRetValue) {
+		return nil, errors.New("Data Corrupt")
+	}
+
+	filedataBytes := GetDecryptedData(fileKey, IV, cipherRetValue)
+	filedata := new(FileRecord)
+	err := json.Unmarshal(filedataBytes, &filedata)
+	if err != nil {
+		return nil, errors.New("Error in UnMarshaling")
+	}
+
+	return filedata, nil
+}
+
+//GenerateHMAC : Returns hash value using key passed as parameter
+func GenerateHMAC(Key []byte, cipherText []byte) []byte {
+	mac := userlib.NewHMAC(Key)
+	mac.Write(cipherText)
+	macValue := mac.Sum(nil)
+	return macValue
+}
+
+//GetEncryptedData : Returns encrypted value using key passed as parameter
+func GetEncryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
+	encryptedCipherText := make([]byte, len(cipherText))
+	cipherEncStream := userlib.CFBEncrypter(Key, IV)
+	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
+	return encryptedCipherText
+}
+
+//GetDecryptedData : Returns decrypted value using key passed as parameter
+func GetDecryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
+	encryptedCipherText := make([]byte, len(cipherText))
+	cipherEncStream := userlib.CFBDecrypter(Key, IV)
+	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
+	return encryptedCipherText
+}
+
 // StoreFile : function used to create a  file
 // It should store the file in blocks only if length
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
+	if len(data)%configBlockSize != 0 && len(data) > 0 {
+		return errors.New("File size is not a mulltiple of Blocksize")
+	}
+
+	fileKey := userdata.GenerateFileKey(filename)
+	filedata := new(FileRecord)
+	filedata.Name = filename
+	filedata.Size = 0
+	filedata.Owner = userdata.Username
+
+	//Generate IV using Public Key of User & truncate to BlockSize
+	publicKey, ret := userlib.KeystoreGet(userdata.Username)
+	if !ret {
+		return errors.New("Error in retriving public key")
+	}
+	IV, err := json.Marshal(publicKey)
+	if err != nil {
+		return err
+	}
+	IV = IV[:userlib.BlockSize]
+
+	//Store Filekey for Owner on DataStore
+	fileNameKey := filedata.Name + "key"
+	fileNameMac := filedata.Name + "mac"
+	userKey := userdata.GenerateUserKey()
+	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
+	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
+
+	cipherValue := GetEncryptedData(userKey, IV, fileKey)
+	macValue := GenerateHMAC(userKey, cipherValue)
+
+	userlib.DatastoreSet(string(cipherKey), cipherValue)
+	userlib.DatastoreSet(string(macKey), macValue)
+
+	//Store FileRecord of a file on DataStore
+	IV = ReverseBytes(fileKey)
+	filedataBytes, err := json.Marshal(filedata)
+	if err != nil {
+		return errors.New("Error in Marshaling")
+	}
+	fileRecord := filedata.Name + "Record"
+	fileRecordMac := filedata.Name + "RecordMac"
+	cipherKey = GetEncryptedData(fileKey, IV, []byte(fileRecord))
+	macKey = GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
+
+	cipherValue = GetEncryptedData(fileKey, IV, filedataBytes)
+	macValue = GenerateHMAC(fileKey, cipherValue)
+
+	userlib.DatastoreSet(string(cipherKey), cipherValue)
+	userlib.DatastoreSet(string(macKey), macValue)
+
+	return userdata.AppendFile(filedata.Name, data)
 }
 
 //
@@ -109,7 +279,57 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // the block size; if it is not, AppendFile must return an error.
 // AppendFile : Function to append the file
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
+	if len(data)%configBlockSize != 0 && len(data) > 0 {
+		return errors.New("File size is not a mulltiple of Blocksize")
+	}
 
+	fileKey, err := userdata.GetFileKey(filename)
+	if err != nil {
+		return errors.New("file does not exist")
+	}
+
+	filedata, err := userdata.GetFile(filename, fileKey)
+	if err != nil {
+		return errors.New("file does not exist / Corrupt Data")
+	}
+
+	fileKeyString := string(fileKey)
+	IV := ReverseBytes(fileKey)
+	length := len(data) / configBlockSize
+	offset := filedata.Size
+
+	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
+		//Store filedata offset wise
+		filedataKey := fileKeyString + strconv.Itoa(offset)
+		cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
+		cipherValue := GetEncryptedData(fileKey, IV, data[i*configBlockSize:(i+1)*configBlockSize])
+		userlib.DatastoreSet(string(cipherKey), cipherValue)
+
+		//Store filedata mac
+		filedataMac := filedataKey + "mac"
+		macValue := GenerateHMAC(fileKey, cipherValue)
+		macKey := GetEncryptedData(fileKey, IV, []byte(filedataMac))
+		userlib.DatastoreSet(string(macKey), macValue)
+	}
+
+	//Update File data structure
+	filedata.Size = offset
+	filedataBytes, err := json.Marshal(filedata)
+	if err != nil {
+		return errors.New("Error in Marshaling")
+	}
+	fileRecord := filedata.Name + "Record"
+	fileRecordMac := filedata.Name + "RecordMac"
+	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
+	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
+
+	cipherValue := GetEncryptedData(fileKey, IV, filedataBytes)
+	macValue := GenerateHMAC(fileKey, cipherValue)
+
+	userlib.DatastoreSet(string(cipherKey), cipherValue)
+	userlib.DatastoreSet(string(macKey), macValue)
+
+	return nil
 }
 
 // LoadFile :This loads a block from a file in the Datastore.
@@ -121,6 +341,36 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 // LoadFile is also expected to be efficient. Reading a random block from the
 // file should not fetch more than O(1) blocks from the Datastore.
 func (userdata *User) LoadFile(filename string, offset int) (data []byte, err error) {
+	fileKey, err := userdata.GetFileKey(filename)
+	if err != nil {
+		return nil, errors.New("file does not exist")
+	}
+	filedata, err := userdata.GetFile(filename, fileKey)
+	if err != nil {
+		return nil, errors.New("file does not exist / Data Corrupt")
+	}
+	if filedata.Size >= offset {
+		return nil, errors.New("Offset more than filesize")
+	}
+	IV := ReverseBytes(fileKey)
+	fileKeyString := string(fileKey)
+	filedataKey := fileKeyString + strconv.Itoa(offset)
+	cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
+	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret {
+		return nil, errors.New("Error in retriving filedata at some offset")
+	}
+	filedataMac := filedataKey + "mac"
+	macKey := GetEncryptedData(fileKey, IV, []byte(filedataMac))
+	macRetValue, ret := userlib.DatastoreGet(string(macKey))
+	if !ret {
+		return nil, errors.New("Error in retriving mac of filedata at some offset")
+	}
+	macValue := GenerateHMAC(fileKey, cipherRetValue)
+	if !userlib.Equal(macValue, macRetValue) {
+		return nil, errors.New("Data Corrupt")
+	}
+	return GetDecryptedData(fileKey, IV, cipherRetValue), nil
 }
 
 // ShareFile : Function used to the share file with other user
@@ -160,30 +410,6 @@ func GenerateUserKey(username string, password string) []byte {
 	return userKey
 }
 
-//GenerateHMAC : Returns hash value using key passed as parameter
-func GenerateHMAC(Key []byte, cipherText []byte) []byte {
-	mac := userlib.NewHMAC(Key)
-	mac.Write(cipherText)
-	macValue := mac.Sum(nil)
-	return macValue
-}
-
-//GetEncryptedData : Returns encrypted value using key passed as parameter
-func GetEncryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
-	encryptedCipherText := make([]byte, len(cipherText))
-	cipherEncStream := userlib.CFBEncrypter(Key, IV)
-	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
-	return encryptedCipherText
-}
-
-//GetDecryptedData : Returns decrypted value using key passed as parameter
-func GetDecryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
-	encryptedCipherText := make([]byte, len(cipherText))
-	cipherEncStream := userlib.CFBDecrypter(Key, IV)
-	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
-	return encryptedCipherText
-}
-
 // This creates a user.  It will only be called once for a user
 // (unless the keystore and datastore are cleared during testing purposes)
 
@@ -209,14 +435,16 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 
 	userlib.KeystoreSet(username, privKey.PublicKey)
 
-	userKey := GenerateUserKey(username, password)
+	userKey := userdata.GenerateUserKey()
 	userdataBytes, err := json.Marshal(userdata)
 	if err != nil {
-		fmt.Println(err)
-		return
+		return nil, err
 	}
 
-	IV, err = json.Marshal(privKey.PublicKey)
+	IV, err := json.Marshal(privKey.PublicKey)
+	if err != nil {
+		return nil, err
+	}
 	IV = IV[:userlib.BlockSize]
 
 	userNameMac := username + "mac"
@@ -238,14 +466,20 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // data was corrupted, or if the user can't be found.
 //GetUser : function used to get the user details
 func GetUser(username string, password string) (userdataptr *User, err error) {
-	userKey := GenerateUserKey(username, password)
+	userdata := new(User)
+	userdata.Username = username
+	userdata.Password = password
+	userKey := userdata.GenerateUserKey()
 	publicKey, ret := userlib.KeystoreGet(username)
 	if !ret {
 		return nil, nil
 	}
 
 	//Generate IV using Public Key of User & truncate to BlockSize
-	IV, err = json.Marshal(publicKey)
+	IV, err := json.Marshal(publicKey)
+	if err != nil {
+		return nil, err
+	}
 	IV = IV[:userlib.BlockSize]
 
 	userNameMac := username + "mac"
@@ -254,20 +488,28 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	macKey := GetEncryptedData(userKey, IV, []byte(userNameMac))
 
 	macRetValue, ret := userlib.DatastoreGet(string(macKey))
+	if !ret {
+		return nil, err
+	}
+
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret {
+		return nil, err
+	}
 
 	//MAC compute & check
 	macValue := GenerateHMAC(userKey, cipherRetValue)
-	if !Equal(macValue, macRetValue) {
-		fmt.Println("Data Corrupt!")
-		return nil, nil
+	if !userlib.Equal(macValue, macRetValue) {
+		return nil, errors.New("Data Corrupt")
 	}
 
 	dataKey := GetEncryptedData(userKey, IV, []byte(username))
 	dataValue, ret := userlib.DatastoreGet(string(dataKey))
+	if !ret {
+		return nil, err
+	}
 
 	userdataBytes := GetDecryptedData(userKey, IV, dataValue)
-	userdata := new(User)
 	err = json.Unmarshal(userdataBytes, &userdata)
 	if err != nil || userdata.Password != password {
 		return nil, err
