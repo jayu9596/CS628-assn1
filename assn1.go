@@ -27,7 +27,6 @@ import (
 	//
 	// You need to add with "go get github.com/google/uuid"
 	"github.com/google/uuid"
-	"github.com/jaydeep/userlib"
 
 	// Useful for debug messages, or string manipulation for datastore keys
 	"strings"
@@ -156,11 +155,33 @@ type sharingRecord struct {
 }
 
 //GenerateUserKey : Returns a Unique Key based on username and password
-func GenerateUserKey(string username, string password) (userKey []byte) {
-	userKey := userlib.Argon2Key([]byte(password),
-		[]byte(username),
-		uint32(userlib.BlockSize))
+func GenerateUserKey(username string, password string) []byte {
+	userKey := userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.BlockSize))
 	return userKey
+}
+
+//GenerateHMAC : Returns hash value using key passed as parameter
+func GenerateHMAC(Key []byte, cipherText []byte) []byte {
+	mac := userlib.NewHMAC(Key)
+	mac.Write(cipherText)
+	macValue := mac.Sum(nil)
+	return macValue
+}
+
+//GetEncryptedData : Returns encrypted value using key passed as parameter
+func GetEncryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
+	encryptedCipherText := make([]byte, len(cipherText))
+	cipherEncStream := userlib.CFBEncrypter(Key, IV)
+	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
+	return encryptedCipherText
+}
+
+//GetDecryptedData : Returns decrypted value using key passed as parameter
+func GetDecryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
+	encryptedCipherText := make([]byte, len(cipherText))
+	cipherEncStream := userlib.CFBDecrypter(Key, IV)
+	cipherEncStream.XORKeyStream(encryptedCipherText, cipherText)
+	return encryptedCipherText
 }
 
 // This creates a user.  It will only be called once for a user
