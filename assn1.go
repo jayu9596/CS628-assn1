@@ -8,9 +8,6 @@ import (
 	// You neet to add with
 	// go get github.com/sarkarbidya/CS628-assn1/userlib
 
-	"crypto/rsa"
-	"strconv"
-
 	"github.com/sarkarbidya/CS628-assn1/userlib"
 
 	// Life is much easier with json:  You are
@@ -89,7 +86,7 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 type User struct {
 	Username string
 	Password string
-	PrivKey  *rsa.PrivateKey
+	PrivKey  *userlib.PrivateKey
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
@@ -300,7 +297,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
 		//Store filedata offset wise
-		filedataKey := fileKeyString + strconv.Itoa(offset)
+		filedataKey := fileKeyString + string(byte(offset))
 		cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 		cipherValue := GetEncryptedData(fileKey, IV, data[i*configBlockSize:(i+1)*configBlockSize])
 		userlib.DatastoreSet(string(cipherKey), cipherValue)
@@ -349,12 +346,12 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	if err != nil {
 		return nil, errors.New("file does not exist / Data Corrupt")
 	}
-	if filedata.Size >= offset {
+	if offset >= filedata.Size {
 		return nil, errors.New("Offset more than filesize")
 	}
 	IV := ReverseBytes(fileKey)
 	fileKeyString := string(fileKey)
-	filedataKey := fileKeyString + strconv.Itoa(offset)
+	filedataKey := fileKeyString + string(byte(offset))
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
 	if !ret {
@@ -375,6 +372,7 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
+	return "df", nil
 }
 
 // ReceiveFile:Note recipient's filename can be different from the sender's filename.
@@ -383,10 +381,12 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 // it is authentically from the sender.
 // ReceiveFile : function used to receive the file details from the sender
 func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
+	return nil
 }
 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) (err error) {
+	return nil
 }
 
 // This creates a sharing record, which is a key pointing to something
@@ -404,12 +404,6 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 type sharingRecord struct {
 }
 
-//GenerateUserKey : Returns a Unique Key based on username and password
-func GenerateUserKey(username string, password string) []byte {
-	userKey := userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.BlockSize))
-	return userKey
-}
-
 // This creates a user.  It will only be called once for a user
 // (unless the keystore and datastore are cleared during testing purposes)
 
@@ -425,8 +419,16 @@ func GenerateUserKey(username string, password string) []byte {
 
 // You can assume the user has a STRONG password
 
+func GenerateUserKey(username string, password string) []byte {
+	userKey := userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.BlockSize))
+	return userKey
+}
+
 //InitUser : function used to create user
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	if len(username) <= 0 || len(password) <= 0 {
+		return nil, errors.New("Empty UserName/Password")
+	}
 	privKey, err := userlib.GenerateRSAKey()
 	userdata := new(User)
 	userdata.Username = username
@@ -472,7 +474,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	userKey := userdata.GenerateUserKey()
 	publicKey, ret := userlib.KeystoreGet(username)
 	if !ret {
-		return nil, nil
+		return nil, errors.New("Public Key not found")
 	}
 
 	//Generate IV using Public Key of User & truncate to BlockSize
