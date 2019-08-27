@@ -7,7 +7,6 @@ import (
 
 	// You neet to add with
 	// go get github.com/sarkarbidya/CS628-assn1/userlib
-
 	"github.com/sarkarbidya/CS628-assn1/userlib"
 
 	// Life is much easier with json:  You are
@@ -346,12 +345,15 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	if err != nil {
 		return nil, errors.New("file does not exist / Data Corrupt")
 	}
+
 	if offset >= filedata.Size {
+
 		return nil, errors.New("Offset more than filesize")
 	}
 	IV := ReverseBytes(fileKey)
 	fileKeyString := string(fileKey)
 	filedataKey := fileKeyString + string(byte(offset))
+
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
 	if !ret {
