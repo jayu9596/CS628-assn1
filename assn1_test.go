@@ -40,14 +40,22 @@ func TestUserStorage(t *testing.T) {
 
 func TestFileStoreLoadAppend(t *testing.T) {
 	data1 := userlib.RandomBytes(4096)
-	_ := u1.StoreFile("file1", data1)
-
-	data2, _ := u1.LoadFile("file1",0) 
-	
-
+	u1, err1 := InitUser("usernmae", "password")
+	u1, err1 = GetUser("usernmae", "password")
+	if err1 != nil {
+		t.Error("Cannot load data for invalid user", u1)
+	}
+	ab1 := u1.StoreFile("file1", data1)
+	if ab1 != nil {
+		t.Error("Cannot store file file1", ab1)
+	}
+	data2, ab := u1.LoadFile("file1", 0)
+	if ab != nil {
+		t.Error("Cannot Load file file1", ab)
+	}
 	if !reflect.DeepEqual(data1, data2) {
 		t.Error("data corrupted")
-	}else{
+	} else {
 		t.Log("data is not corrupted")
 	}
 
