@@ -214,6 +214,7 @@ func GetDecryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
+	//TODO: Optional - Handle StoreFile with same filename called twice
 	if len(data)%configBlockSize != 0 && len(data) > 0 {
 		return errors.New("File size is not a mulltiple of Blocksize")
 	}
@@ -275,6 +276,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // the block size; if it is not, AppendFile must return an error.
 // AppendFile : Function to append the file
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
+	//TODO: Check if file exists or not - same holds for Load/Revoke as well
 	if len(data)%configBlockSize != 0 && len(data) > 0 {
 		return errors.New("File size is not a mulltiple of Blocksize")
 	}
@@ -296,6 +298,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
 		//Store filedata offset wise
+		//TODO: Change offset to byte array
 		filedataKey := fileKeyString + string(byte(offset))
 		cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 		cipherValue := GetEncryptedData(fileKey, IV, data[i*configBlockSize:(i+1)*configBlockSize])
@@ -347,9 +350,9 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	}
 
 	if offset >= filedata.Size {
-
 		return nil, errors.New("Offset more than filesize")
 	}
+
 	IV := ReverseBytes(fileKey)
 	fileKeyString := string(fileKey)
 	filedataKey := fileKeyString + string(byte(offset))
@@ -374,7 +377,25 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
-	return "df", nil
+	fileKey, err := userdata.GetFileKey(filename)
+	recvPubKey, ret := userlib.KeystoreGet(recipient)
+	if !ret {
+		return "", errors.New("Error in fetching user public-key from KS")
+	}
+
+	encMsg, err := userlib.RSAEncrypt(&recvPubKey, fileKey, []byte("0"))
+	signature, err := userlib.RSASign(userdata.PrivKey, encMsg)
+
+	newval := append(signature, 1, 2)
+	macValue := GenerateHMAC(fileKey, newval)
+
+	msgid = string(macValue) + string(newval)
+
+	macRetValue1 := []byte(msgid[:32])
+	signature1 := []byte(msgid[32:96])
+	encMsg1 := []byte(msgid[96:])
+	print(macRetValue1, signature1, encMsg1)
+	return msgid, nil
 }
 
 // ReceiveFile:Note recipient's filename can be different from the sender's filename.
@@ -383,11 +404,83 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 // it is authentically from the sender.
 // ReceiveFile : function used to receive the file details from the sender
 func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
+
+	macRetValue := []byte(msgid[:32])
+	signature := []byte(msgid[32:96])
+	encMsg := []byte(msgid[96:])
+
+	sendPubKey, ret := userlib.KeystoreGet(sender)
+	if !ret {
+		return errors.New("Error in fetching user public-key from KS")
+	}
+
+	err := userlib.RSAVerify(&sendPubKey, encMsg, signature)
+	if err != nil {
+		return errors.New("Invalid Signature")
+	}
+
+	fileKey, err := userlib.RSADecrypt(userdata.PrivKey, encMsg, []byte("0"))
+	if err != nil {
+		return err
+	}
+
+	macValue := GenerateHMAC(fileKey, encMsg)
+	if !userlib.Equal(macValue, macRetValue) {
+		return errors.New("Message Corrupt")
+	}
+
+	userKey := userdata.GenerateUserKey()
+	fileNameKey := filename + "key"
+	fileNameMac := filename + "mac"
+	IV := ReverseBytes(fileKey)
+
+	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
+	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
+
+	cipherValue := GetEncryptedData(userKey, IV, fileKey)
+	macValue = GenerateHMAC(userKey, cipherValue)
+
+	userlib.DatastoreSet(string(cipherKey), cipherValue)
+	userlib.DatastoreSet(string(macKey), macValue)
+
 	return nil
 }
 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) (err error) {
+
+	oldFileKey, err := userdata.GetFileKey(filename)
+
+	filedata, err := userdata.GetFile(filename, oldFileKey)
+	if err != nil {
+		return errors.New("file does not exist / Corrupt Data")
+	}
+
+	if filedata.Owner != userdata.Username {
+		return errors.New("unauthorised evoke")
+	}
+
+	fileKeyString := string(oldFileKey)
+	IV := ReverseBytes(oldFileKey)
+
+	data := make([]byte, filedata.Size*configBlockSize)
+
+	for i := 0; i < filedata.Size; i = i + 1 {
+		//TODO: Change offset to byte array
+		filedataKey := fileKeyString + string(byte(i))
+		cipherKey := GetEncryptedData(oldFileKey, IV, []byte(filedataKey))
+		blockData, err := userdata.LoadFile(filename, i)
+		if err != nil {
+			return errors.New("LoadFile error")
+		}
+		data = append(data, blockData...)
+		userlib.DatastoreDelete(string(cipherKey))
+	}
+
+	err = userdata.StoreFile(filename, data)
+	if err != nil {
+		return errors.New("StoreFile error")
+	}
 	return nil
 }
 
