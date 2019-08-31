@@ -44,6 +44,7 @@ func TestFileStoreLoadAppend(t *testing.T) {
 	if err1 != nil {
 		t.Error("Cannot load data for invalid user", u1)
 	}
+	//Store Load File TestCase
 	ab1 := u1.StoreFile("file1", data1)
 	if ab1 != nil {
 		t.Error("Cannot store file file1", ab1)
@@ -53,6 +54,22 @@ func TestFileStoreLoadAppend(t *testing.T) {
 		t.Error("Cannot Load file file1", ab)
 	}
 	if !reflect.DeepEqual(data1, data2) {
+		t.Error("data corrupted")
+	} else {
+		t.Log("data is not corrupted")
+	}
+
+	//Append File TestCase
+	datanew1 := userlib.RandomBytes(4096)
+	ab = u1.AppendFile("file1", datanew1)
+	if ab != nil {
+		t.Error("Cannot append to file file1", ab)
+	}
+	data2, ab = u1.LoadFile("file1", 1)
+	if ab != nil {
+		t.Error("Cannot Load file file1", ab)
+	}
+	if !reflect.DeepEqual(datanew1, data2) {
 		t.Error("data corrupted")
 	} else {
 		t.Log("data is not corrupted")
@@ -75,13 +92,28 @@ func TestFileShareReceive(t *testing.T) {
 	}
 	msg, err := u1.ShareFile("file1", "usernmae1")
 	err = u2.ReceiveFile("abc", "usernmae", msg)
-	data2, ab := u1.LoadFile("abc", 0)
+	data2, ab := u2.LoadFile("abc", 0)
 	if ab != nil || err != nil {
-		t.Error("Cannot Load file file1", ab)
+		t.Error("Cannot Load file file1\n", ab)
 	}
 	if !reflect.DeepEqual(data1, data2) {
 		t.Error("data corrupted")
 	} else {
 		t.Log("data is not corrupted")
 	}
+	err = u1.RevokeFile("file1")
+	if err != nil {
+		t.Error("Revoke Failed\n", ab)
+	}
+	data2, ab = u2.LoadFile("abc", 0)
+	if ab != nil {
+		t.Log("Test Functionality Failed\n")
+	} else {
+		t.Error("Test Case Passed", ab)
+	}
+	data2, ab = u1.LoadFile("file1", 0)
+	if ab != nil || err != nil {
+		t.Error("Cannot Load file file1\n", ab)
+	}
+
 }

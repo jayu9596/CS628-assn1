@@ -7,6 +7,7 @@ import (
 
 	// You neet to add with
 	// go get github.com/sarkarbidya/CS628-assn1/userlib
+
 	"github.com/sarkarbidya/CS628-assn1/userlib"
 
 	// Life is much easier with json:  You are
@@ -98,6 +99,23 @@ type FileRecord struct {
 	Owner string
 }
 
+// This creates a sharing record, which is a key pointing to something
+// in the datastore to share with the recipient.
+
+// This enables the recipient to access the encrypted file as well
+// for reading/appending.
+
+// Note that neither the recipient NOR the datastore should gain any
+// information about what the sender calls the file.  Only the
+// recipient can access the sharing record, and only the recipient
+// should be able to know the sender.
+// You may want to define what you actually want to pass as a
+// sharingRecord to serialized/deserialize in the data store.
+type sharingRecord struct {
+	Signature []byte
+	EncMsg    []byte
+}
+
 //ReverseBytes : Reverse a byte array
 func ReverseBytes(key []byte) []byte {
 	arr := make([]byte, len(key))
@@ -155,8 +173,9 @@ func (userdata *User) GetFileKey(filename string) ([]byte, error) {
 //GetFile : Retrieve File DataStructure after checking Integrity
 func (userdata *User) GetFile(filename string, fileKey []byte) (*FileRecord, error) {
 	IV := ReverseBytes(fileKey)
-	fileRecord := filename + "Record"
-	fileRecordMac := filename + "RecordMac"
+	fileKeyString := string(fileKey)
+	fileRecord := fileKeyString + "Record"
+	fileRecordMac := fileKeyString + "RecordMac"
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
@@ -251,12 +270,13 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 
 	//Store FileRecord of a file on DataStore
 	IV = ReverseBytes(fileKey)
+	fileKeyString := string(fileKey)
 	filedataBytes, err := json.Marshal(filedata)
 	if err != nil {
 		return errors.New("Error in Marshaling")
 	}
-	fileRecord := filedata.Name + "Record"
-	fileRecordMac := filedata.Name + "RecordMac"
+	fileRecord := fileKeyString + "Record"
+	fileRecordMac := fileKeyString + "RecordMac"
 	cipherKey = GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey = GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
@@ -317,8 +337,8 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	if err != nil {
 		return errors.New("Error in Marshaling")
 	}
-	fileRecord := filedata.Name + "Record"
-	fileRecordMac := filedata.Name + "RecordMac"
+	fileRecord := fileKeyString + "Record"
+	fileRecordMac := fileKeyString + "RecordMac"
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
@@ -386,19 +406,19 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 	encMsg, err := userlib.RSAEncrypt(&recvPubKey, fileKey, []byte("0"))
 	signature, err := userlib.RSASign(userdata.PrivKey, encMsg)
 
-	newval := append(signature, 1, 2)
-	macValue := GenerateHMAC(fileKey, newval)
-
-	msgid = string(macValue) + string(newval)
-
-	macRetValue1 := []byte(msgid[:32])
-	signature1 := []byte(msgid[32:96])
-	encMsg1 := []byte(msgid[96:])
-	print(macRetValue1, signature1, encMsg1)
+	sharedata := new(sharingRecord)
+	sharedata.Signature = signature
+	sharedata.EncMsg = encMsg
+	sharedataBytes, err := json.Marshal(sharedata)
+	if err != nil {
+		return "", errors.New("Marshalling  sharing maessage failed")
+	}
+	macValue := GenerateHMAC(fileKey, sharedataBytes)
+	msgid = string(macValue) + string(sharedataBytes)
 	return msgid, nil
 }
 
-// ReceiveFile:Note recipient's filename can be different from the sender's filename.
+// ReceiveFile :Note recipient's filename can be different from the sender's filename.
 // The recipient should not be able to discover the sender's view on
 // what the filename even is!  However, the recipient must ensure that
 // it is authentically from the sender.
@@ -406,15 +426,23 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
 
 	macRetValue := []byte(msgid[:32])
-	signature := []byte(msgid[32:96])
-	encMsg := []byte(msgid[96:])
+
+	sharedata := new(sharingRecord)
+	encMsg := []byte(msgid[32:])
+	err := json.Unmarshal(encMsg, &sharedata)
+	if err != nil {
+		return errors.New("Error in UnMarshaling")
+	}
+
+	encMsg = sharedata.EncMsg
+	signature := sharedata.Signature
 
 	sendPubKey, ret := userlib.KeystoreGet(sender)
 	if !ret {
 		return errors.New("Error in fetching user public-key from KS")
 	}
 
-	err := userlib.RSAVerify(&sendPubKey, encMsg, signature)
+	err = userlib.RSAVerify(&sendPubKey, encMsg, signature)
 	if err != nil {
 		return errors.New("Invalid Signature")
 	}
@@ -424,7 +452,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 		return err
 	}
 
-	macValue := GenerateHMAC(fileKey, encMsg)
+	macValue := GenerateHMAC(fileKey, []byte(msgid[32:]))
 	if !userlib.Equal(macValue, macRetValue) {
 		return errors.New("Message Corrupt")
 	}
@@ -432,7 +460,16 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 	userKey := userdata.GenerateUserKey()
 	fileNameKey := filename + "key"
 	fileNameMac := filename + "mac"
-	IV := ReverseBytes(fileKey)
+
+	pubKey, ret := userlib.KeystoreGet(userdata.Username)
+	if !ret {
+		return errors.New("Error while retriving public key")
+	}
+	IV, err := json.Marshal(pubKey)
+	if err != nil {
+		return errors.New("Error while marshaling")
+	}
+	IV = IV[:userlib.BlockSize]
 
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
@@ -482,21 +519,6 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 		return errors.New("StoreFile error")
 	}
 	return nil
-}
-
-// This creates a sharing record, which is a key pointing to something
-// in the datastore to share with the recipient.
-
-// This enables the recipient to access the encrypted file as well
-// for reading/appending.
-
-// Note that neither the recipient NOR the datastore should gain any
-// information about what the sender calls the file.  Only the
-// recipient can access the sharing record, and only the recipient
-// should be able to know the sender.
-// You may want to define what you actually want to pass as a
-// sharingRecord to serialized/deserialize in the data store.
-type sharingRecord struct {
 }
 
 // This creates a user.  It will only be called once for a user
