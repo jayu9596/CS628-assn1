@@ -159,7 +159,13 @@ func (userdata *User) GetFileKey(filename string) ([]byte, error) {
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
 	macRetValue, ret := userlib.DatastoreGet(string(macKey))
+	if !ret {
+		return nil, errors.New("Error while retriving from DS")
+	}
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret {
+		return nil, errors.New("Error while retriving from DS")
+	}
 
 	macValue := GenerateHMAC(userKey, cipherRetValue)
 	if !userlib.Equal(macValue, macRetValue) {
@@ -168,6 +174,28 @@ func (userdata *User) GetFileKey(filename string) ([]byte, error) {
 
 	cipherRetValue = GetDecryptedData(userKey, IV, cipherRetValue)
 	return cipherRetValue, nil
+}
+
+//String : Convert int to string
+func String(n int32) string {
+	buf := [11]byte{}
+	pos := len(buf)
+	i := int64(n)
+	signed := i < 0
+	if signed {
+		i = -i
+	}
+	for {
+		pos--
+		buf[pos], i = '0'+byte(i%10), i/10
+		if i == 0 {
+			if signed {
+				pos--
+				buf[pos] = '-'
+			}
+			return string(buf[pos:])
+		}
+	}
 }
 
 //GetFile : Retrieve File DataStructure after checking Integrity
@@ -289,7 +317,6 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	return userdata.AppendFile(filedata.Name, data)
 }
 
-//
 // Append should be efficient, you shouldn't rewrite or reencrypt the
 // existing file, but only whatever additional information and
 // metadata you need. The length of data []byte must be a multiple of
@@ -312,14 +339,15 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	}
 
 	fileKeyString := string(fileKey)
-	IV := ReverseBytes(fileKey)
 	length := len(data) / configBlockSize
 	offset := filedata.Size
 
 	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
 		//Store filedata offset wise
 		//TODO: Change offset to byte array
-		filedataKey := fileKeyString + string(byte(offset))
+		filedataKey := fileKeyString + String(int32(offset))
+		IV := ReverseBytes([]byte(filedataKey))
+		IV = IV[:userlib.BlockSize]
 		cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 		cipherValue := GetEncryptedData(fileKey, IV, data[i*configBlockSize:(i+1)*configBlockSize])
 		userlib.DatastoreSet(string(cipherKey), cipherValue)
@@ -339,6 +367,7 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	}
 	fileRecord := fileKeyString + "Record"
 	fileRecordMac := fileKeyString + "RecordMac"
+	IV := ReverseBytes(fileKey)
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
@@ -373,9 +402,10 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 		return nil, errors.New("Offset more than filesize")
 	}
 
-	IV := ReverseBytes(fileKey)
 	fileKeyString := string(fileKey)
-	filedataKey := fileKeyString + string(byte(offset))
+	filedataKey := fileKeyString + String(int32(offset))
+	IV := ReverseBytes([]byte(filedataKey))
+	IV = IV[:userlib.BlockSize]
 
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
@@ -398,13 +428,22 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
 	fileKey, err := userdata.GetFileKey(filename)
+	if err != nil {
+		return "", err
+	}
 	recvPubKey, ret := userlib.KeystoreGet(recipient)
 	if !ret {
 		return "", errors.New("Error in fetching user public-key from KS")
 	}
 
 	encMsg, err := userlib.RSAEncrypt(&recvPubKey, fileKey, []byte("0"))
+	if err != nil {
+		return "", err
+	}
 	signature, err := userlib.RSASign(userdata.PrivKey, encMsg)
+	if err != nil {
+		return "", err
+	}
 
 	sharedata := new(sharingRecord)
 	sharedata.Signature = signature
@@ -415,6 +454,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 	}
 	macValue := GenerateHMAC(fileKey, sharedataBytes)
 	msgid = string(macValue) + string(sharedataBytes)
+
 	return msgid, nil
 }
 
@@ -487,24 +527,29 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 func (userdata *User) RevokeFile(filename string) (err error) {
 
 	oldFileKey, err := userdata.GetFileKey(filename)
+	if err != nil {
+		return err
+	}
 
 	filedata, err := userdata.GetFile(filename, oldFileKey)
 	if err != nil {
-		return errors.New("file does not exist / Corrupt Data")
+		return err
 	}
 
+	// TODO: Remove?
 	if filedata.Owner != userdata.Username {
-		return errors.New("unauthorised evoke")
+		return errors.New("unauthorised revoke")
 	}
 
 	fileKeyString := string(oldFileKey)
-	IV := ReverseBytes(oldFileKey)
 
-	data := make([]byte, filedata.Size*configBlockSize)
+	var data []byte
 
 	for i := 0; i < filedata.Size; i = i + 1 {
 		//TODO: Change offset to byte array
-		filedataKey := fileKeyString + string(byte(i))
+		filedataKey := fileKeyString + String(int32(i))
+		IV := ReverseBytes([]byte(filedataKey))
+		IV = IV[:userlib.BlockSize]
 		cipherKey := GetEncryptedData(oldFileKey, IV, []byte(filedataKey))
 		blockData, err := userdata.LoadFile(filename, i)
 		if err != nil {
@@ -514,10 +559,20 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 		userlib.DatastoreDelete(string(cipherKey))
 	}
 
+	IV := ReverseBytes(oldFileKey)
+	fileRecord := fileKeyString + "Record"
+	fileRecordMac := fileKeyString + "RecordMac"
+	cipherKey := GetEncryptedData(oldFileKey, IV, []byte(fileRecord))
+	macKey := GetEncryptedData(oldFileKey, IV, []byte(fileRecordMac))
+
+	userlib.DatastoreDelete(string(cipherKey))
+	userlib.DatastoreDelete(string(macKey))
+
 	err = userdata.StoreFile(filename, data)
 	if err != nil {
-		return errors.New("StoreFile error")
+		return err
 	}
+
 	return nil
 }
 
@@ -533,9 +588,9 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 // without also knowing the password and username.
 // You are not allowed to use any global storage other than the
 // keystore and the datastore functions in the userlib library.
-
 // You can assume the user has a STRONG password
 
+//GenerateUserKey :
 func GenerateUserKey(username string, password string) []byte {
 	userKey := userlib.Argon2Key([]byte(password), []byte(username), uint32(userlib.BlockSize))
 	return userKey
@@ -547,6 +602,10 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 		return nil, errors.New("Empty UserName/Password")
 	}
 	privKey, err := userlib.GenerateRSAKey()
+	if err != nil {
+		return nil, err
+	}
+
 	userdata := new(User)
 	userdata.Username = username
 	userdata.Password = password
@@ -608,12 +667,12 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 	macRetValue, ret := userlib.DatastoreGet(string(macKey))
 	if !ret {
-		return nil, err
+		return nil, errors.New("MAC not retrieved")
 	}
 
 	cipherRetValue, ret := userlib.DatastoreGet(string(cipherKey))
 	if !ret {
-		return nil, err
+		return nil, errors.New("Problem while retrieving from DS")
 	}
 
 	//MAC compute & check
@@ -625,7 +684,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 	dataKey := GetEncryptedData(userKey, IV, []byte(username))
 	dataValue, ret := userlib.DatastoreGet(string(dataKey))
 	if !ret {
-		return nil, err
+		return nil, errors.New("Problem while retrieving from DS")
 	}
 
 	userdataBytes := GetDecryptedData(userKey, IV, dataValue)
