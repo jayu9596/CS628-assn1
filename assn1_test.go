@@ -43,6 +43,7 @@ func TestFileStoreLoadAppend(t *testing.T) {
 	if err1 != nil {
 		t.Error("Cannot load data for invalid user", u1)
 	}
+
 	//Store Load File TestCase
 	ab1 := u1.StoreFile("file1", data1)
 	if ab1 != nil {
