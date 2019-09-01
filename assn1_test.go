@@ -135,7 +135,7 @@ func TestFileMutlipleUserAppend(t *testing.T) {
 }
 
 func TestFileShareReceiveMutate(t *testing.T) {
-	data1 := userlib.RandomBytes(4096)
+	data1 := userlib.RandomBytes(configBlockSize)
 	u1, err1 := InitUser("usernmae", "password")
 	u1, err1 = GetUser("usernmae", "password")
 	u2, err1 := InitUser("usernmae1", "password1")

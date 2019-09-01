@@ -114,6 +114,7 @@ type FileRecord struct {
 type sharingRecord struct {
 	Signature []byte
 	EncMsg    []byte
+	randBytes []byte
 }
 
 //ReverseBytes : Reverse a byte array
@@ -155,7 +156,10 @@ func (userdata *User) GetFileKey(filename string) ([]byte, error) {
 		return nil, errors.New("Error while marshaling")
 	}
 	IV = IV[:userlib.BlockSize]
-
+	fileNameByte := GenerateHMAC(userKey, []byte(filename))
+	for i := range IV {
+		IV[i] ^= fileNameByte[i%len(fileNameByte)]
+	}
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
 	macRetValue, ret := userlib.DatastoreGet(string(macKey))
@@ -172,8 +176,8 @@ func (userdata *User) GetFileKey(filename string) ([]byte, error) {
 		return nil, errors.New("Data Corrupt")
 	}
 
-	cipherRetValue = GetDecryptedData(userKey, IV, cipherRetValue)
-	return cipherRetValue, nil
+	fileKey := GetDecryptedData(userKey, IV, cipherRetValue)
+	return fileKey, nil
 }
 
 //String : Convert int to string
@@ -262,11 +266,11 @@ func GetDecryptedData(Key []byte, IV []byte, cipherText []byte) []byte {
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	//TODO: Optional - Handle StoreFile with same filename called twice
+	userKey := userdata.GenerateUserKey()
 	if len(data)%configBlockSize != 0 && len(data) > 0 {
 		return errors.New("File size is not a mulltiple of Blocksize")
 	}
 
-	fileKey := userdata.GenerateFileKey(filename)
 	filedata := new(FileRecord)
 	filedata.Name = filename
 	filedata.Size = 0
@@ -283,18 +287,27 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	}
 	IV = IV[:userlib.BlockSize]
 
+	fileNameByte := GenerateHMAC(userKey, []byte(filedata.Name))
+	for i := range IV {
+		IV[i] ^= fileNameByte[i%len(fileNameByte)]
+	}
+
 	//Store Filekey for Owner on DataStore
 	fileNameKey := filedata.Name + "key"
 	fileNameMac := filedata.Name + "mac"
-	userKey := userdata.GenerateUserKey()
+	//userKey := userdata.GenerateUserKey()
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
+	var fileKey []byte
+	val, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret || val == nil {
+		fileKey = userdata.GenerateFileKey(filename)
+		cipherValue := GetEncryptedData(userKey, IV, fileKey)
+		macValue := GenerateHMAC(userKey, cipherValue)
 
-	cipherValue := GetEncryptedData(userKey, IV, fileKey)
-	macValue := GenerateHMAC(userKey, cipherValue)
-
-	userlib.DatastoreSet(string(cipherKey), cipherValue)
-	userlib.DatastoreSet(string(macKey), macValue)
+		userlib.DatastoreSet(string(cipherKey), cipherValue)
+		userlib.DatastoreSet(string(macKey), macValue)
+	}
 
 	//Store FileRecord of a file on DataStore
 	IV = ReverseBytes(fileKey)
@@ -308,8 +321,8 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	cipherKey = GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey = GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
-	cipherValue = GetEncryptedData(fileKey, IV, filedataBytes)
-	macValue = GenerateHMAC(fileKey, cipherValue)
+	cipherValue := GetEncryptedData(fileKey, IV, filedataBytes)
+	macValue := GenerateHMAC(fileKey, cipherValue)
 
 	userlib.DatastoreSet(string(cipherKey), cipherValue)
 	userlib.DatastoreSet(string(macKey), macValue)
@@ -344,7 +357,6 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 
 	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
 		//Store filedata offset wise
-		//TODO: Change offset to byte array
 		filedataKey := fileKeyString + String(int32(offset))
 		IV := ReverseBytes([]byte(filedataKey))
 		IV = IV[:userlib.BlockSize]
@@ -448,6 +460,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 	sharedata := new(sharingRecord)
 	sharedata.Signature = signature
 	sharedata.EncMsg = encMsg
+	sharedata.randBytes = userlib.RandomBytes(20)
 	sharedataBytes, err := json.Marshal(sharedata)
 	if err != nil {
 		return "", errors.New("Marshalling  sharing maessage failed")
@@ -510,7 +523,10 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 		return errors.New("Error while marshaling")
 	}
 	IV = IV[:userlib.BlockSize]
-
+	fileNameByte := GenerateHMAC(userKey, []byte(filename))
+	for i := range IV {
+		IV[i] ^= fileNameByte[i%len(fileNameByte)]
+	}
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
 
@@ -526,6 +542,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) (err error) {
 
+	userKey := userdata.GenerateUserKey()
 	oldFileKey, err := userdata.GetFileKey(filename)
 	if err != nil {
 		return err
@@ -559,11 +576,32 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 		userlib.DatastoreDelete(string(cipherKey))
 	}
 
-	IV := ReverseBytes(oldFileKey)
+	publicKey, ret := userlib.KeystoreGet(userdata.Username)
+	if !ret {
+		return errors.New("Error in retriving public key")
+	}
+	IV, err := json.Marshal(publicKey)
+	if err != nil {
+		return err
+	}
+	IV = IV[:userlib.BlockSize]
+	fileNameByte := GenerateHMAC(userKey, []byte(filename))
+	for i := range IV {
+		IV[i] ^= fileNameByte[i%len(fileNameByte)]
+	}
+	fileNameKey := filedata.Name + "key"
+	fileNameMac := filedata.Name + "mac"
+	//userKey := userdata.GenerateUserKey()
+	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
+	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
+	userlib.DatastoreDelete(string(cipherKey))
+	userlib.DatastoreDelete(string(macKey))
+
+	IV = ReverseBytes(oldFileKey)
 	fileRecord := fileKeyString + "Record"
 	fileRecordMac := fileKeyString + "RecordMac"
-	cipherKey := GetEncryptedData(oldFileKey, IV, []byte(fileRecord))
-	macKey := GetEncryptedData(oldFileKey, IV, []byte(fileRecordMac))
+	cipherKey = GetEncryptedData(oldFileKey, IV, []byte(fileRecord))
+	macKey = GetEncryptedData(oldFileKey, IV, []byte(fileRecordMac))
 
 	userlib.DatastoreDelete(string(cipherKey))
 	userlib.DatastoreDelete(string(macKey))
