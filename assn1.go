@@ -345,9 +345,11 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	for i := 0; offset < filedata.Size+length; offset, i = offset+1, i+1 {
 		//Store filedata offset wise
 		//TODO: Change offset to byte array
+
 		filedataKey := fileKeyString + String(int32(offset))
 		IV := ReverseBytes([]byte(filedataKey))
 		IV = IV[:userlib.BlockSize]
+
 		cipherKey := GetEncryptedData(fileKey, IV, []byte(filedataKey))
 		cipherValue := GetEncryptedData(fileKey, IV, data[i*configBlockSize:(i+1)*configBlockSize])
 		userlib.DatastoreSet(string(cipherKey), cipherValue)
@@ -367,7 +369,9 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 	}
 	fileRecord := fileKeyString + "Record"
 	fileRecordMac := fileKeyString + "RecordMac"
+
 	IV := ReverseBytes(fileKey)
+
 	cipherKey := GetEncryptedData(fileKey, IV, []byte(fileRecord))
 	macKey := GetEncryptedData(fileKey, IV, []byte(fileRecordMac))
 
@@ -428,15 +432,18 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
 	fileKey, err := userdata.GetFileKey(filename)
+
 	if err != nil {
 		return "", err
 	}
+
 	recvPubKey, ret := userlib.KeystoreGet(recipient)
 	if !ret {
 		return "", errors.New("Error in fetching user public-key from KS")
 	}
 
 	encMsg, err := userlib.RSAEncrypt(&recvPubKey, fileKey, []byte("0"))
+
 	if err != nil {
 		return "", err
 	}
@@ -444,6 +451,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 	if err != nil {
 		return "", err
 	}
+
 
 	sharedata := new(sharingRecord)
 	sharedata.Signature = signature
@@ -454,7 +462,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 	}
 	macValue := GenerateHMAC(fileKey, sharedataBytes)
 	msgid = string(macValue) + string(sharedataBytes)
-
 	return msgid, nil
 }
 
@@ -527,6 +534,7 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 func (userdata *User) RevokeFile(filename string) (err error) {
 
 	oldFileKey, err := userdata.GetFileKey(filename)
+
 	if err != nil {
 		return err
 	}
@@ -550,6 +558,7 @@ func (userdata *User) RevokeFile(filename string) (err error) {
 		filedataKey := fileKeyString + String(int32(i))
 		IV := ReverseBytes([]byte(filedataKey))
 		IV = IV[:userlib.BlockSize]
+
 		cipherKey := GetEncryptedData(oldFileKey, IV, []byte(filedataKey))
 		blockData, err := userdata.LoadFile(filename, i)
 		if err != nil {
