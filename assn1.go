@@ -298,9 +298,8 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 	//userKey := userdata.GenerateUserKey()
 	cipherKey := GetEncryptedData(userKey, IV, []byte(fileNameKey))
 	macKey := GetEncryptedData(userKey, IV, []byte(fileNameMac))
-	var fileKey []byte
-	val, ret := userlib.DatastoreGet(string(cipherKey))
-	if !ret || val == nil {
+	fileKey, ret := userlib.DatastoreGet(string(cipherKey))
+	if !ret || fileKey == nil {
 		fileKey = userdata.GenerateFileKey(filename)
 		cipherValue := GetEncryptedData(userKey, IV, fileKey)
 		macValue := GenerateHMAC(userKey, cipherValue)
