@@ -60,16 +60,20 @@ func TestFileStoreLoadAppend(t *testing.T) {
 	}
 
 	//Append File TestCase
+
 	datanew1 := userlib.RandomBytes(5 * configBlockSize)
+
 	ab = u1.AppendFile("file1", datanew1)
 	if ab != nil {
 		t.Error("Cannot append to file file1", ab)
 	}
+
 	data2, ab = u1.LoadFile("file1", 5)
 	if ab != nil {
 		t.Error("Cannot Load file file1", ab)
 	}
 	if !reflect.DeepEqual(datanew1[:configBlockSize], data2) {
+
 		t.Error("data corrupted")
 	} else {
 		t.Log("data is not corrupted")
@@ -96,6 +100,7 @@ func TestFileShareReceive(t *testing.T) {
 		t.Error("Cannot Load file file1\n", ab)
 	}
 	if !reflect.DeepEqual(data1, data2) {
+
 		t.Error("File share failed")
 	} else {
 		t.Log("File shared sucessfully")
@@ -311,11 +316,11 @@ func TestFileShareReceiveNew(t *testing.T) {
 	}
 
 	// u1 revokes
+
 	err = u1.RevokeFile("file1")
 	if err != nil {
 		t.Error("Revoke Failed\n", ab)
 	}
-
 	//u1 updates
 	dataappend1 := userlib.RandomBytes(configBlockSize)
 	err = u1.AppendFile("file1", dataappend1)
